@@ -109,7 +109,7 @@
         </model>
 
         <include>
-            <uri>model:///home/unitree/catkin_ws/src/ros_unitree/unitree_ros/unitree_gazebo/worlds/building_editor_models/stairs</uri>
+            <uri>model:///home/max/catkin_ws/src/ros_unitree/unitree_ros/unitree_gazebo/worlds/building_editor_models/stairs</uri>
         </include>
 
     </world>

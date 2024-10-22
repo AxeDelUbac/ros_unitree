@@ -41,5 +41,8 @@
         <node if="$(arg rviz)" pkg="rviz" type="rviz" name="rviz"
             args="-d $(find unitree_move_base)/rviz/move_base.rviz"/>
 
+        <node name="astar_planner" pkg="go1_path_finding" type="Astar.py" output="screen"/>
+        <!-- <node name="go1_astar_node" pkg="go1_path_finding" type="Astar.py" output="screen"/> -->
+
     <!-- </group> -->
 </launch>
