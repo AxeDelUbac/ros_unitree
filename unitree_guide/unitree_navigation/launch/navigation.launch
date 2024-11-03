@@ -9,7 +9,7 @@
 
     <!-- <group ns="$(arg rname)"> -->
         <!-- Map server -->
-        <arg name="map_file" default="$(find unitree_navigation)/maps/office_small.yaml"/>
+        <arg name="map_file" default="$(find go1_path_finding)/maps/office_cpr_all.yaml"/>
         <node pkg="map_server" name="map_server" type="map_server" args="$(arg map_file)" >
             <!-- <param name="frame_id" value="$(arg frame_prefix)map" /> -->
             <param name="frame_id" value="map" />
@@ -41,8 +41,11 @@
         <node if="$(arg rviz)" pkg="rviz" type="rviz" name="rviz"
             args="-d $(find unitree_move_base)/rviz/move_base.rviz"/>
 
-        <node name="astar_planner" pkg="go1_path_finding" type="Astar.py" output="screen"/>
+        <!-- <node name="astar_planner" pkg="go1_path_finding" type="Astar.py" output="screen"/> -->
         <!-- <node name="go1_astar_node" pkg="go1_path_finding" type="Astar.py" output="screen"/> -->
+        <!-- <node name="path_publisher" pkg="go1_path_finding" type="PathonRviz.py" output="screen"/> -->
+        <!-- <node name="custom_path_publisher" pkg="go1_path_finding" type="astar_test.py" output="screen"/> -->
+        <node name="path_finding_algorithm" pkg="go1_path_finding" type="map_retreive.py" output="screen"/>
 
     <!-- </group> -->
 </launch>
