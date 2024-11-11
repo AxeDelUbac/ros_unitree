@@ -2,6 +2,7 @@
 from numpy import rate
 import rospy
 import math
+import heapq
 from nav_msgs.msg import OccupancyGrid,Path
 from geometry_msgs.msg import PoseStamped,PoseWithCovarianceStamped
 
@@ -14,12 +15,16 @@ class PathFindingAlgorithm:
         self.goal_sub = rospy.Subscriber("/move_base_simple/goal", PoseStamped, self.update_goal_position)
 
         self.path_pub = rospy.Publisher("/planned_path", Path, queue_size=10)
-        self.goal_path_pub = rospy.Publisher("/goal_path", Path, queue_size=10)
+        self.global_plan_pub = rospy.Publisher("/move_base/TrajectoryPlannerROS/global_plan", Path, queue_size=10)
 
         # Données de la carte, position du robot et position de l'objectif
         self.map_data = None
         self.robot_position = None
         self.goal_position = None
+
+        # To track previous state
+        self.previous_robot_position = None
+        self.previous_goal_position = None
 
     def map_callback(self, msg):
         self.map_data = msg
@@ -34,24 +39,6 @@ class PathFindingAlgorithm:
         
        
         rospy.loginfo(f"Carte de {width}x{height} reçue avec une résolution de {resolution} mètre/cellule.")
-
-    # def publish_custom_path(self):
-    #     path = Path()
-    #     path.header.frame_id = "odom"
-    #     path.header.stamp = rospy.Time.now()
-
-    #     # Génération des poses avec une courbe sinusoïdale
-    #     for i in range(50):
-    #         pose = PoseStamped()
-    #         pose.header.frame_id = "odom"
-    #         pose.pose.position.x = i * 0.1
-    #         pose.pose.position.y = math.sin(i * 0.2)
-    #         pose.pose.position.z = 0
-    #         pose.pose.orientation.w = 1.0
-    #         path.poses.append(pose)
-
-    #     # Publie le chemin sinusoïdal
-    #     self.path_pub.publish(path)
 
     def update_robot_position(self, msg):
         """Mise à jour de la position actuelle du robot."""
@@ -68,10 +55,70 @@ class PathFindingAlgorithm:
         rospy.loginfo(f"Position de l'objectif : {self.goal_position}")
         
         # Si la position du robot est connue, trace la ligne
-        if self.robot_position:
-            self.publish_path()
+        # if self.robot_position:
+        #     self.publish_path()
 
-    def publish_path(self):
+    def create_grid_from_map(self):
+        """Convert the map into a 2D grid usable for A*"""
+        if self.map_data is None:
+            return None
+        
+        width = self.map_data.info.width
+        height = self.map_data.info.height
+        map_array = list(self.map_data.data)
+        grid = [map_array[i * width:(i + 1) * width] for i in range(height)]
+        return grid
+    
+    def heuristic(self, start, goal):
+        """Heuristique pour A* (distance euclidienne)"""
+        return math.sqrt((start[0] - goal[0]) ** 2 + (start[1] - goal[1]) ** 2)
+
+    def get_neighbors(self, position, grid):
+        """Retourne les voisins accessibles d'une position donnée"""
+        x, y = position
+        neighbors = []
+        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:  # 4 directions (ajoutez des diagonales si nécessaire)
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < len(grid[0]) and 0 <= ny < len(grid):
+                if grid[ny][nx] == 0:  # 0 signifie libre
+                    neighbors.append((nx, ny))
+        return neighbors
+
+    def reconstruct_path(self, came_from, current):
+        """Reconstruction du chemin après A*"""
+        path = [current]
+        while current in came_from:
+            current = came_from[current]
+            path.append(current)
+        path.reverse()
+        return path
+
+    def a_star(self, start, goal, grid):
+        """Implémentation de l'algorithme A*"""
+        open_set = []
+        heapq.heappush(open_set, (0, start))  # (f, position)
+        came_from = {}
+        g_score = {start: 0}
+        f_score = {start: self.heuristic(start, goal)}
+        
+        while open_set:
+            _, current = heapq.heappop(open_set)
+            
+            # Si on est arrivé au but
+            if current == goal:
+                return self.reconstruct_path(came_from, current)
+            
+            for neighbor in self.get_neighbors(current, grid):
+                tentative_g_score = g_score[current] + 1  # Chaque mouvement coûte 1
+                if neighbor not in g_score or tentative_g_score < g_score[neighbor]:
+                    came_from[neighbor] = current
+                    g_score[neighbor] = tentative_g_score
+                    f_score[neighbor] = tentative_g_score + self.heuristic(neighbor, goal)
+                    heapq.heappush(open_set, (f_score[neighbor], neighbor))
+        
+        return None  # Aucun chemin trouvé
+
+    def startEndLineDrawing(self):
         """Trace une ligne entre la position du robot et l'objectif."""
         path_msg = Path()
         path_msg.header.frame_id = "map"
@@ -96,12 +143,57 @@ class PathFindingAlgorithm:
         self.path_pub = rospy.Publisher("/planned_path", path_msg, queue_size=10)
         rospy.loginfo("Ligne publiée entre le robot et l'objectif")
 
+    def publish_path(self):
+        """Calculate and publish the A* path between the robot's position and the goal"""
+        if not self.robot_position or not self.goal_position or not self.map_data:
+            return
+
+        grid = self.create_grid_from_map()
+        if grid is None:
+            rospy.logwarn("La carte n'est pas encore prête.")
+            return
+
+        start = (int(self.robot_position[0]), int(self.robot_position[1]))
+        goal = (int(self.goal_position[0]), int(self.goal_position[1]))
+
+        # Vérifier si les positions de départ et de but sont valides
+        if grid[start[1]][start[0]] != 0:
+            rospy.logwarn("La position de départ est invalide (occupée ou inconnue).")
+            return
+
+        if grid[goal[1]][goal[0]] != 0:
+            rospy.logwarn("La position de l'objectif est invalide (occupée ou inconnue).")
+            return
+
+        path = self.a_star(start, goal, grid)
+        if path:
+            path_msg = Path()
+            path_msg.header.frame_id = "map"
+            path_msg.header.stamp = rospy.Time.now()
+
+            for (x, y) in path:
+                pose = PoseStamped()
+                pose.pose.position.x = x
+                pose.pose.position.y = y
+                pose.pose.orientation.w = 1.0
+                path_msg.poses.append(pose)
+
+            # Publish the A* path to both topics
+            self.path_pub.publish(path_msg)
+            rospy.loginfo("Chemin A* publié sur /planned_path")
+            self.global_plan_pub.publish(path_msg)
+            rospy.loginfo("Chemin A* publié sur /move_base/TrajectoryPlannerROS/global_plan")
+        else:
+            rospy.logwarn("Aucun chemin trouvé par A*")
+
     def run(self):
-        # rospy.spin()
-        rate = rospy.Rate(1)
-        while not rospy.is_shutdown():
-            #self.publish_custom_path()  # Publie le chemin sinusoïdal
-            rate.sleep()
+         rospy.spin()
+        # rate = rospy.Rate(1)
+        # while not rospy.is_shutdown():
+        #     # Réévaluer et publier le chemin en continu si des données sont disponibles
+        #     if self.robot_position and self.goal_position and self.map_data:
+        #         self.publish_path()
+        #     rate.sleep()
 
 if __name__ == "__main__":
     rospy.init_node("path_finding_algorithm")
@@ -110,8 +202,6 @@ if __name__ == "__main__":
         # Attendez un moment que le publisher se connecte
     rospy.sleep(1)
     
-
-    # publish_line(start_point, end_point)
     
     rospy.loginfo("Test Started")
 

@@ -45,7 +45,8 @@
         <!-- <node name="go1_astar_node" pkg="go1_path_finding" type="Astar.py" output="screen"/> -->
         <!-- <node name="path_publisher" pkg="go1_path_finding" type="PathonRviz.py" output="screen"/> -->
         <!-- <node name="custom_path_publisher" pkg="go1_path_finding" type="astar_test.py" output="screen"/> -->
-        <node name="path_finding_algorithm" pkg="go1_path_finding" type="map_retreive.py" output="screen"/>
+        <!-- <node name="path_finding_algorithm" pkg="go1_path_finding" type="map_retreive.py" output="screen"/> -->
+        <node name="path_finding_algorithm2" pkg="go1_path_finding" type="map_retreive2.py" output="screen"/>
 
     <!-- </group> -->
 </launch>
