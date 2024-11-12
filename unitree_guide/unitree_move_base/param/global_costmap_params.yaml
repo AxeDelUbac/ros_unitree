@@ -1,8 +1,8 @@
 global_costmap:
   global_frame: map
   robot_base_frame: base
-  update_frequency: 0.1 
-  publish_frequency: 0.2 
+  update_frequency: 10 
+  publish_frequency: 5
   static_map: true
   cost_scaling_factor: 10.0
 

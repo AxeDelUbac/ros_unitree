@@ -2,9 +2,10 @@
 from numpy import rate
 import rospy
 import math
+import actionlib
 from nav_msgs.msg import OccupancyGrid,Path
 from geometry_msgs.msg import PoseStamped,PoseWithCovarianceStamped
-
+from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
 
 class PathFindingAlgorithm:
     def __init__(self):
@@ -15,7 +16,7 @@ class PathFindingAlgorithm:
 
         self.path_pub = rospy.Publisher("/planned_path", Path, queue_size=10)
         self.start_end_path_pub = rospy.Publisher("/start_end_path", Path, queue_size=10)
-        self.global_plan_pub = rospy.Publisher("/move_base/TrajectoryPlannerROS/global_plan", Path, queue_size=10)
+        # self.global_plan_pub = rospy.Publisher("/move_base/TrajectoryPlannerROS/global_plan", Path, queue_size=10)
         
         # Publisher pour afficher la trajectoire enregistrée
         self.actual_path_pub = rospy.Publisher("/actual_path", Path, queue_size=10)
@@ -26,6 +27,11 @@ class PathFindingAlgorithm:
         # Données de la carte, position du robot et position de l'objectif
         self.map_data = None
         self.robot_position = None
+
+        # Variables de trajet
+        self.planned_trajectory = []  # Stocker la trajectoire sinusoïdale
+        self.current_target_index = 0  # Indice pour suivre le point actuel
+
         self.goal_position = None
         self.initial_position = None
 
@@ -34,6 +40,10 @@ class PathFindingAlgorithm:
 
         # Initialisation de last_publish_time pour gérer la fréquence de publication
         self.last_publish_time = rospy.Time.now()
+
+        # Action client pour envoyer des objectifs à move_base
+        self.move_base_client = actionlib.SimpleActionClient("move_base", MoveBaseAction)
+        self.move_base_client.wait_for_server()
 
     def map_callback(self, msg):
         self.map_data = msg
@@ -48,6 +58,26 @@ class PathFindingAlgorithm:
         
        
         rospy.loginfo(f"Carte de {width}x{height} reçue avec une résolution de {resolution} mètre/cellule.")
+
+    def goal_reached_callback(self, status, result):
+        """Callback pour gérer l'atteinte de chaque objectif."""
+        if status == actionlib.GoalStatus.SUCCEEDED:
+            rospy.loginfo(f"Point {self.current_target_index} atteint.")
+            self.current_target_index += 1
+            # Annuler explicitement l'objectif pour éviter les conflits d'état
+            self.move_base_client.cancel_goal()
+            self.move_base_client.wait_for_result()  # Assure l'attente de la fin
+            # Envoyer le prochain objectif après l'annulation
+            self.send_next_goal()
+        else:
+            rospy.logwarn("L'objectif n'a pas été atteint. Passage au point suivant.")
+
+            # Annuler l'objectif pour s'assurer qu'il est réinitialisé
+            self.move_base_client.cancel_goal()
+            self.move_base_client.wait_for_result()
+
+            self.current_target_index += 1
+            self.send_next_goal()
 
     # def publish_custom_path(self):
     #     path = Path()
@@ -112,9 +142,14 @@ class PathFindingAlgorithm:
             self.publish_initial_path() 
         
         # Si la position du robot est connue, trace la ligne
-        if self.robot_position:
+        # if self.robot_position:
             # self.publish_path()
+            # self.publish_curved_path()
+
+        # Génère la trajectoire sinusoïdale entre la position actuelle et l'objectif
+        if self.robot_position:
             self.publish_curved_path()
+            self.send_next_goal()
 
     def has_reached_goal(self):
         """Check if the robot has reached its goal position."""
@@ -197,11 +232,15 @@ class PathFindingAlgorithm:
     def publish_curved_path(self):
         """Trace une courbe entre la position du robot et l'objectif."""
         if not self.robot_position or not self.goal_position:
+            rospy.logwarn("Position du robot ou de l'objectif non définie, impossible de générer le chemin.")
             return
 
         path_msg = Path()
         path_msg.header.frame_id = "map"
         path_msg.header.stamp = rospy.Time.now()
+
+        # Réinitialiser la trajectoire existante
+        self.planned_trajectory = []
 
         # Génération des poses avec une courbe sinusoïdale entre le point de départ et le point d'arrivée
         num_points = 50
@@ -214,10 +253,13 @@ class PathFindingAlgorithm:
             y = (1 - t) * y_start + t * y_end + 1.5 * math.sin(2 * math.pi * t)  # Ajout d'une composante sinusoïdale sur y
 
             pose = PoseStamped()
+            pose.header.frame_id = "map"
             pose.pose.position.x = x
             pose.pose.position.y = y
             pose.pose.orientation.w = 1.0
             path_msg.poses.append(pose)
+
+            self.planned_trajectory.append(pose)
 
         # Publie le chemin courbe
         self.path_pub.publish(path_msg)
@@ -233,6 +275,23 @@ class PathFindingAlgorithm:
         # Publie le chemin parcouru sur /actual_path
         self.actual_path_pub.publish(path_msg)
         rospy.loginfo("Chemin parcouru publié sur /actual_path")
+
+    def send_next_goal(self):
+        """Envoie le prochain point de la sinusoïde à move_base comme objectif."""
+        if self.current_target_index < len(self.planned_trajectory):
+            target_pose = self.planned_trajectory[self.current_target_index]
+            goal = MoveBaseGoal()
+            goal.target_pose.header.frame_id = "map"
+            goal.target_pose.header.stamp = rospy.Time.now()
+            goal.target_pose.pose = target_pose.pose
+
+            rospy.loginfo(f"Envoi du point {self.current_target_index} comme objectif à move_base : {goal.target_pose.pose.position}")
+            self.move_base_client.send_goal(goal, done_cb=self.goal_reached_callback)
+
+            # Ajouter une pause pour laisser le temps à move_base de traiter le nouvel objectif
+            rospy.sleep(0.1)
+        else:
+            rospy.loginfo("Tous les points de la trajectoire sinusoïdale ont été atteints.")
 
     def run(self):
         # rospy.spin()

@@ -8,7 +8,6 @@ Panels:
         - /Pose Array1
         - /LaserScan1
         - /Map1
-        - /Path1
       Splitter Ratio: 0.6526610255241394
     Tree Height: 675
   - Class: rviz/Selection
@@ -573,7 +572,6 @@ Visualization Manager:
       Use Timestamp: false
       Value: true
     - Alpha: 1
-      Name: Actual Path
       Buffer Length: 1
       Class: rviz/Path
       Color: 25; 255; 0
@@ -595,6 +593,22 @@ Visualization Manager:
       Shaft Diameter: 0.10000000149011612
       Shaft Length: 0.10000000149011612
       Topic: /actual_path
+      Unreliable: false
+      Value: true
+    - Alpha: 1
+      Axes Length: 1
+      Axes Radius: 0.10000000149011612
+      Class: rviz/Pose
+      Color: 255; 25; 0
+      Enabled: true
+      Head Length: 0.30000001192092896
+      Head Radius: 0.10000000149011612
+      Name: Pose
+      Queue Size: 10
+      Shaft Length: 1
+      Shaft Radius: 0.05000000074505806
+      Shape: Arrow
+      Topic: /reached_points
       Unreliable: false
       Value: true
   Enabled: true
@@ -629,7 +643,7 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Scale: 75.44729614257812
+      Scale: 80.33039855957031
       Target Frame: <Fixed Frame>
       X: -0.33437129855155945
       Y: 0.34128516912460327
@@ -651,4 +665,4 @@ Window Geometry:
     collapsed: false
   Width: 1432
   X: 483
-  Y: 61
+  Y: 27

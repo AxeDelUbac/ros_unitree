@@ -1,210 +1,177 @@
 #!/usr/bin/env python3
-from numpy import rate
 import rospy
 import math
-import heapq
-from nav_msgs.msg import OccupancyGrid,Path
-from geometry_msgs.msg import PoseStamped,PoseWithCovarianceStamped
-
+import actionlib
+from nav_msgs.msg import OccupancyGrid, Path
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
+from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
 
 class PathFindingAlgorithm:
     def __init__(self):
-        #subscription and publication
+        # Initialisation des abonnements et publications
         self.map_sub = rospy.Subscriber("/map", OccupancyGrid, self.map_callback)
         self.pose_sub = rospy.Subscriber("/amcl_pose", PoseWithCovarianceStamped, self.update_robot_position)
         self.goal_sub = rospy.Subscriber("/move_base_simple/goal", PoseStamped, self.update_goal_position)
 
-        self.path_pub = rospy.Publisher("/planned_path", Path, queue_size=10)
         self.global_plan_pub = rospy.Publisher("/move_base/TrajectoryPlannerROS/global_plan", Path, queue_size=10)
+        self.path_pub = rospy.Publisher("/planned_path", Path, queue_size=10)
+        self.actual_path_pub = rospy.Publisher("/actual_path", Path, queue_size=10)
+        self.reached_points_pub = rospy.Publisher("/reached_points", PoseStamped, queue_size=10)
+
+        # Liste pour enregistrer les poses de la trajectoire
+        self.actual_trajectory = []
 
         # Données de la carte, position du robot et position de l'objectif
         self.map_data = None
         self.robot_position = None
         self.goal_position = None
+        self.initial_position = None
 
-        # To track previous state
-        self.previous_robot_position = None
-        self.previous_goal_position = None
+        # Variables de trajet
+        self.planned_trajectory = []  # Stocker la trajectoire sinusoïdale
+        self.current_target_index = 0  # Indice pour suivre le point actuel
+
+        # Action client pour envoyer des objectifs à move_base
+        self.move_base_client = actionlib.SimpleActionClient("move_base", MoveBaseAction)
+        self.move_base_client.wait_for_server()
 
     def map_callback(self, msg):
+        rospy.loginfo(f"Carte de {msg.info.width}x{msg.info.height} reçue avec une résolution de {msg.info.resolution} mètre/cellule.")
         self.map_data = msg
-        width = msg.info.width
-        height = msg.info.height
-        resolution = msg.info.resolution
-        origin = msg.info.origin
-
-        # Convertir la grille d'occupation en tableau 2D
-        map_array = list(msg.data)  # Convertir la liste des données en tableau
-        map_grid = [map_array[i * width:(i + 1) * width] for i in range(height)]
-        
-       
-        rospy.loginfo(f"Carte de {width}x{height} reçue avec une résolution de {resolution} mètre/cellule.")
 
     def update_robot_position(self, msg):
         """Mise à jour de la position actuelle du robot."""
         self.robot_position = (msg.pose.pose.position.x, msg.pose.pose.position.y)
         rospy.loginfo(f"Position actuelle du robot : {self.robot_position}")
-        
-        # Si un goal est défini, trace la ligne
-        if self.goal_position:
-            self.publish_path()
+
+        # Enregistrer la pose actuelle dans la trajectoire réelle parcourue
+        pose = PoseStamped()
+        pose.header.frame_id = "map"
+        pose.header.stamp = rospy.Time.now()
+        pose.pose.position.x = self.robot_position[0]
+        pose.pose.position.y = self.robot_position[1]
+        pose.pose.orientation.w = 1.0
+        self.actual_trajectory.append(pose)
+        self.publish_actual_path()
 
     def update_goal_position(self, msg):
-        """Mise à jour de la position de l'objectif."""
+        """Mise à jour de la position de l'objectif et génération de la trajectoire sinusoïdale."""
         self.goal_position = (msg.pose.position.x, msg.pose.position.y)
-        rospy.loginfo(f"Position de l'objectif : {self.goal_position}")
+        rospy.loginfo(f"Nouvel objectif défini : {self.goal_position}")
         
-        # Si la position du robot est connue, trace la ligne
-        # if self.robot_position:
-        #     self.publish_path()
+        if self.robot_position:
+            # Générer et publier la trajectoire sinusoïdale
+            self.publish_curved_path()
+            # Commencer à suivre la trajectoire
+            self.send_next_goal()
+            rospy.loginfo(f"First point of the trajectory are follow")
 
-    def create_grid_from_map(self):
-        """Convert the map into a 2D grid usable for A*"""
-        if self.map_data is None:
-            return None
-        
-        width = self.map_data.info.width
-        height = self.map_data.info.height
-        map_array = list(self.map_data.data)
-        grid = [map_array[i * width:(i + 1) * width] for i in range(height)]
-        return grid
-    
-    def heuristic(self, start, goal):
-        """Heuristique pour A* (distance euclidienne)"""
-        return math.sqrt((start[0] - goal[0]) ** 2 + (start[1] - goal[1]) ** 2)
+    def publish_curved_path(self):
+        """Trace une courbe entre la position du robot et l'objectif."""
+        if not self.robot_position or not self.goal_position:
+            rospy.logwarn("Position du robot ou de l'objectif non définie, impossible de générer le chemin.")
+            return
 
-    def get_neighbors(self, position, grid):
-        """Retourne les voisins accessibles d'une position donnée"""
-        x, y = position
-        neighbors = []
-        for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:  # 4 directions (ajoutez des diagonales si nécessaire)
-            nx, ny = x + dx, y + dy
-            if 0 <= nx < len(grid[0]) and 0 <= ny < len(grid):
-                if grid[ny][nx] == 0:  # 0 signifie libre
-                    neighbors.append((nx, ny))
-        return neighbors
-
-    def reconstruct_path(self, came_from, current):
-        """Reconstruction du chemin après A*"""
-        path = [current]
-        while current in came_from:
-            current = came_from[current]
-            path.append(current)
-        path.reverse()
-        return path
-
-    def a_star(self, start, goal, grid):
-        """Implémentation de l'algorithme A*"""
-        open_set = []
-        heapq.heappush(open_set, (0, start))  # (f, position)
-        came_from = {}
-        g_score = {start: 0}
-        f_score = {start: self.heuristic(start, goal)}
-        
-        while open_set:
-            _, current = heapq.heappop(open_set)
-            
-            # Si on est arrivé au but
-            if current == goal:
-                return self.reconstruct_path(came_from, current)
-            
-            for neighbor in self.get_neighbors(current, grid):
-                tentative_g_score = g_score[current] + 1  # Chaque mouvement coûte 1
-                if neighbor not in g_score or tentative_g_score < g_score[neighbor]:
-                    came_from[neighbor] = current
-                    g_score[neighbor] = tentative_g_score
-                    f_score[neighbor] = tentative_g_score + self.heuristic(neighbor, goal)
-                    heapq.heappush(open_set, (f_score[neighbor], neighbor))
-        
-        return None  # Aucun chemin trouvé
-
-    def startEndLineDrawing(self):
-        """Trace une ligne entre la position du robot et l'objectif."""
         path_msg = Path()
         path_msg.header.frame_id = "map"
         path_msg.header.stamp = rospy.Time.now()
 
-        # Pose de départ (position du robot)
-        start_pose = PoseStamped()
-        start_pose.pose.position.x = self.robot_position[0]
-        start_pose.pose.position.y = self.robot_position[1]
-        start_pose.pose.orientation.w = 1.0
-        path_msg.poses.append(start_pose)
+        # Réinitialiser la trajectoire existante
+        self.planned_trajectory = []
 
-        # Pose de fin (position de l'objectif)
-        end_pose = PoseStamped()
-        end_pose.pose.position.x = self.goal_position[0]
-        end_pose.pose.position.y = self.goal_position[1]
-        end_pose.pose.orientation.w = 1.0
-        path_msg.poses.append(end_pose)
+        # Génération des poses avec une courbe sinusoïdale entre le point de départ et le point d'arrivée
+        num_points = 5
+        x_start, y_start = self.robot_position
+        x_end, y_end = self.goal_position
 
-        # Publie le chemin
+        for i in range(1, num_points + 1):
+            t = i / num_points
+            x = (1 - t) * x_start + t * x_end
+            y = (1 - t) * y_start + t * y_end + 1.5 * math.sin(2 * math.pi * t)
+
+            pose = PoseStamped()
+            pose.header.frame_id = "map"
+            pose.pose.position.x = x
+            pose.pose.position.y = y
+            pose.pose.orientation.w = 1.0
+            path_msg.poses.append(pose)
+
+            self.planned_trajectory.append(pose)
+
+        # Publie la trajectoire sinusoïdale
         self.path_pub.publish(path_msg)
-        self.path_pub = rospy.Publisher("/planned_path", path_msg, queue_size=10)
-        rospy.loginfo("Ligne publiée entre le robot et l'objectif")
+        rospy.loginfo("Trajectoire sinusoïdale publiée sur /planned_path")
 
-    def publish_path(self):
-        """Calculate and publish the A* path between the robot's position and the goal"""
-        if not self.robot_position or not self.goal_position or not self.map_data:
-            return
+        # Publie également sur le topic du planificateur global
+        self.global_plan_pub.publish(path_msg)
+        rospy.loginfo("Trajectoire sinusoïdale publiée sur le topic du planificateur global /move_base/TrajectoryPlannerROS/global_plan")
 
-        grid = self.create_grid_from_map()
-        if grid is None:
-            rospy.logwarn("La carte n'est pas encore prête.")
-            return
+    def send_next_goal(self):
+        """Envoie le prochain point de la sinusoïde comme objectif."""
+        rospy.loginfo(f"Go to the point {self.current_target_index} of the trajectory")
 
-        start = (int(self.robot_position[0]), int(self.robot_position[1]))
-        goal = (int(self.goal_position[0]), int(self.goal_position[1]))
+        if self.current_target_index < len(self.planned_trajectory):
+            # Attendez que le serveur d'action soit disponible
+            # self.move_base_client.wait_for_server()
 
-        # Vérifier si les positions de départ et de but sont valides
-        if grid[start[1]][start[0]] != 0:
-            rospy.logwarn("La position de départ est invalide (occupée ou inconnue).")
-            return
+            # Annuler l'objectif précédent pour éviter les conflits d'état
+            self.move_base_client.cancel_goal()
+            # Ajouter une pause après l'annulation
+            rospy.sleep(1)
 
-        if grid[goal[1]][goal[0]] != 0:
-            rospy.logwarn("La position de l'objectif est invalide (occupée ou inconnue).")
-            return
+            target_pose = self.planned_trajectory[self.current_target_index]
+            goal = MoveBaseGoal()
+            goal.target_pose.header.frame_id = "map"
+            goal.target_pose.header.stamp = rospy.Time.now()
+            goal.target_pose.pose = target_pose.pose
 
-        path = self.a_star(start, goal, grid)
-        if path:
-            path_msg = Path()
-            path_msg.header.frame_id = "map"
-            path_msg.header.stamp = rospy.Time.now()
+            rospy.loginfo(f"Envoi du point {self.current_target_index} comme objectif.")
+            self.move_base_client.send_goal(goal, done_cb=self.goal_reached_callback)
 
-            for (x, y) in path:
-                pose = PoseStamped()
-                pose.pose.position.x = x
-                pose.pose.position.y = y
-                pose.pose.orientation.w = 1.0
-                path_msg.poses.append(pose)
+            state = self.move_base_client.get_state()
+            rospy.loginfo(f"État du client d'action après envoi de l'objectif: {state}")
 
-            # Publish the A* path to both topics
-            self.path_pub.publish(path_msg)
-            rospy.loginfo("Chemin A* publié sur /planned_path")
-            self.global_plan_pub.publish(path_msg)
-            rospy.loginfo("Chemin A* publié sur /move_base/TrajectoryPlannerROS/global_plan")
+            # Ajouter des logs pour vérifier l'état du client d'action
+            rospy.sleep(0.1)  # Pause pour laisser le temps à l'action de démarrer
+
         else:
-            rospy.logwarn("Aucun chemin trouvé par A*")
+            rospy.loginfo("Tous les points de la trajectoire ont été atteints.")
+
+    def goal_reached_callback(self, status, result):
+        """Callback pour gérer l'atteinte de chaque objectif."""
+        if status == actionlib.GoalStatus.SUCCEEDED:
+            rospy.loginfo(f"Point {self.current_target_index} Reach.")
+
+            # Publier le point atteint sur le topic "/reached_points"
+            reached_point = self.planned_trajectory[self.current_target_index]
+            self.reached_points_pub.publish(reached_point)
+
+            self.current_target_index += 1
+            rospy.sleep(0.5)  # Add a short delay to ensure state transition
+            self.send_next_goal()
+        else:
+            rospy.logwarn("Objectif non atteint, tentative du point suivant.")
+            self.current_target_index += 1
+            rospy.sleep(0.5)  # Add a short delay to ensure state transition
+            self.send_next_goal()
+
+    def publish_actual_path(self):
+        """Publie le chemin réel parcouru pour visualisation dans Rviz."""
+        path_msg = Path()
+        path_msg.header.frame_id = "map"
+        path_msg.header.stamp = rospy.Time.now()
+        path_msg.poses = self.actual_trajectory
+        self.actual_path_pub.publish(path_msg)
+        rospy.loginfo("Chemin réel publié sur /actual_path")
 
     def run(self):
-         rospy.spin()
-        # rate = rospy.Rate(1)
-        # while not rospy.is_shutdown():
-        #     # Réévaluer et publier le chemin en continu si des données sont disponibles
-        #     if self.robot_position and self.goal_position and self.map_data:
-        #         self.publish_path()
-        #     rate.sleep()
+        rate = rospy.Rate(1)
+        while not rospy.is_shutdown():
+            rate.sleep()
 
 if __name__ == "__main__":
     rospy.init_node("path_finding_algorithm")
-
-    #path_pub = rospy.Publisher("/move_base/TrajectoryPlannerROS/global_plan", Path, queue_size=10)
-        # Attendez un moment que le publisher se connecte
-    rospy.sleep(1)
-    
-    
-    rospy.loginfo("Test Started")
-
+    rospy.sleep(1)  # Pause pour s'assurer de la connexion
+    rospy.loginfo("Démarrage de PathFindingAlgorithm.")
     pfa = PathFindingAlgorithm()
-
     pfa.run()
