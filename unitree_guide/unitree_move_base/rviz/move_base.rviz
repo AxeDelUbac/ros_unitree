@@ -8,6 +8,7 @@ Panels:
         - /Pose Array1
         - /LaserScan1
         - /Map1
+        - /Map2
       Splitter Ratio: 0.6526610255241394
     Tree Height: 675
   - Class: rviz/Selection
@@ -38,7 +39,7 @@ Visualization Manager:
       Cell Size: 0.5
       Class: rviz/Grid
       Color: 0; 0; 0
-      Enabled: true
+      Enabled: false
       Line Style:
         Line Width: 0.029999999329447746
         Value: Lines
@@ -51,7 +52,7 @@ Visualization Manager:
       Plane: XY
       Plane Cell Count: 80
       Reference Frame: odom
-      Value: true
+      Value: false
     - Angle Tolerance: 0.10000000149011612
       Class: rviz/Odometry
       Covariance:
@@ -466,22 +467,22 @@ Visualization Manager:
       Class: rviz/Map
       Color Scheme: costmap
       Draw Behind: false
-      Enabled: true
+      Enabled: false
       Name: Global Costmap
       Topic: /move_base/global_costmap/costmap
       Unreliable: false
       Use Timestamp: false
-      Value: true
+      Value: false
     - Alpha: 0.699999988079071
       Class: rviz/Map
       Color Scheme: costmap
       Draw Behind: false
-      Enabled: true
+      Enabled: false
       Name: Local Costmap
       Topic: /move_base/local_costmap/costmap
       Unreliable: false
       Use Timestamp: false
-      Value: true
+      Value: false
     - Alpha: 1
       Arrow Length: 0.30000001192092896
       Axes Length: 0.30000001192092896
@@ -611,6 +612,16 @@ Visualization Manager:
       Topic: /reached_points
       Unreliable: false
       Value: true
+    - Alpha: 0.699999988079071
+      Class: rviz/Map
+      Color Scheme: map
+      Draw Behind: false
+      Enabled: true
+      Name: Map
+      Topic: /visualized_grid
+      Unreliable: false
+      Use Timestamp: false
+      Value: true
   Enabled: true
   Global Options:
     Background Color: 85; 87; 83
@@ -643,7 +654,7 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Scale: 80.33039855957031
+      Scale: 49.323787689208984
       Target Frame: <Fixed Frame>
       X: -0.33437129855155945
       Y: 0.34128516912460327
