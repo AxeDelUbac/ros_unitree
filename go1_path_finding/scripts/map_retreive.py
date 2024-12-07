@@ -10,6 +10,9 @@ from scipy.ndimage import distance_transform_edt
 from heapq import heappop, heappush
 import numpy as np
 
+from sklearn.cluster import DBSCAN
+from scipy.ndimage import binary_dilation
+
 class PathFindingAlgorithm:
     def __init__(self):
         # Initialisation des abonnements et publications
@@ -23,6 +26,7 @@ class PathFindingAlgorithm:
         self.reached_points_pub = rospy.Publisher("/reached_points", PoseStamped, queue_size=10)
 
         self.safety_margin = 0.45  # Marge de sécurité en mètres
+        self.safety_table_margin = 0.40  # Marge de sécurité en mètres
 
         self.step = 10
 
@@ -174,6 +178,7 @@ class PathFindingAlgorithm:
             int((self.goal_position[0] - self.map_data.info.origin.position.x) / self.map_data.info.resolution),
         )
 
+
         # Validation des cellules de départ et d'arrivée
         if grid[start_cell[0], start_cell[1]] == 1:
             rospy.logwarn(f"La cellule de départ {start_cell} est dans la marge de sécurité ou sur un obstacle. Recherche de la cellule libre la plus proche...")
@@ -249,32 +254,6 @@ class PathFindingAlgorithm:
         first_path_pose.pose.orientation.w = 1.0
         path_msg.poses.append(first_path_pose)
 
-        # for i, cell in enumerate(path_cells):
-        #     pose = PoseStamped()
-        #     pose.header.frame_id = "map"
-        #     pose.pose.position.x = cell[1] * self.map_data.info.resolution + self.map_data.info.origin.position.x
-        #     pose.pose.position.y = cell[0] * self.map_data.info.resolution + self.map_data.info.origin.position.y
-        #     # Calculer l'orientation vers le prochain point
-        #     if i < len(path_cells) - 1:
-        #         next_cell = path_cells[i + 1]
-        #         next_point = (
-        #             next_cell[1] * self.map_data.info.resolution + self.map_data.info.origin.position.x,
-        #             next_cell[0] * self.map_data.info.resolution + self.map_data.info.origin.position.y,
-        #         )
-        #         current_point = (
-        #             pose.pose.position.x,
-        #             pose.pose.position.y,
-        #         )
-        #         quaternion = self.calculate_orientation(current_point, next_point)
-        #         pose.pose.orientation.x = quaternion[0]
-        #         pose.pose.orientation.y = quaternion[1]
-        #         pose.pose.orientation.z = quaternion[2]
-        #         pose.pose.orientation.w = quaternion[3]
-        #     else:
-        #         # Dernier point, garder l'orientation précédente ou vers l'objectif
-        #         pose.pose.orientation.w = 1.0  # Orientation par défaut
-        #     # pose.pose.orientation.w = 1.0
-        #     path_msg.poses.append(pose)
         for i, cell in enumerate(path_cells):
             pose = PoseStamped()
             pose.header.frame_id = "map"
@@ -327,21 +306,6 @@ class PathFindingAlgorithm:
         goal_pose.pose.orientation.w = 1.0
         path_msg.poses.append(goal_pose)
 
-        # Ajouter les points de départ, du chemin principal et d'arrivée à la trajectoire
-        self.planned_trajectory.append(start_pose)
-        self.planned_trajectory.append(first_path_pose)
-        for cell in path_cells:
-            pose = PoseStamped()
-            pose.header.frame_id = "map"
-            pose.pose.position.x = cell[1] * self.map_data.info.resolution + self.map_data.info.origin.position.x
-            pose.pose.position.y = cell[0] * self.map_data.info.resolution + self.map_data.info.origin.position.y
-            pose.pose.orientation.w = 1.0
-            #path_msg.poses.append(pose)
-            self.planned_trajectory.append(pose)
-        self.planned_trajectory.append(last_path_pose)
-        self.planned_trajectory.append(goal_pose)
-
-
         self.path_pub.publish(path_msg)
         rospy.loginfo("Chemin A* publié sur /planned_path.")
 
@@ -371,26 +335,6 @@ class PathFindingAlgorithm:
                       f"Orientation (x={goal.target_pose.pose.orientation.x}, y={goal.target_pose.pose.orientation.y}, "
                       f"z={goal.target_pose.pose.orientation.z}, w={goal.target_pose.pose.orientation.w})")
 
-            # # Vérifier et annuler l'objectif précédent si nécessaire
-            # current_state = self.move_base_client.get_state()
-            # rospy.loginfo(f"État du client d'action avant envoi : {current_state}")
-            # if current_state in [actionlib.GoalStatus.ACTIVE, actionlib.GoalStatus.PENDING]:
-            #     rospy.logwarn("Annulation de l'objectif précédent...")
-            #     self.move_base_client.cancel_goal()
-            #     self.move_base_client.wait_for_result(timeout=rospy.Duration(5.0))  # Attendez que l'annulation se termine
-            #     rospy.sleep(0.2)  # Pause pour stabiliser l'état
-            # elif current_state not in [actionlib.GoalStatus.SUCCEEDED, actionlib.GoalStatus.ABORTED, actionlib.GoalStatus.RECALLED]:
-            #     rospy.logwarn("Attente que l'état actuel soit stable avant d'envoyer un nouvel objectif.")
-            #     self.move_base_client.wait_for_result(timeout=rospy.Duration(2.0))
-            # elif current_state in [actionlib.GoalStatus.SUCCEEDED]:
-            #      rospy.logwarn("OKKK")
-            #      self.move_base_client.cancel_goal()
-            #      self.move_base_client.wait_for_result(timeout=rospy.Duration(5.0)) 
-                         
-            # rospy.loginfo(f"Envoi du point {self.current_target_index} comme objectif.")
-            # # self.move_base_client.send_goal(goal, done_cb=self.goal_reached_callback)
-            # self.move_base_client.send_goal(goal, done_cb=self.goal_reached_callback)
-
             # Annulez l'objectif actuel pour éviter tout conflit
             rospy.loginfo("Annulation de l'objectif actuel (s'il existe).")
             self.move_base_client.cancel_goal()
@@ -409,14 +353,17 @@ class PathFindingAlgorithm:
             new_state = self.move_base_client.get_state()
             rospy.loginfo(f"État après envoi : {new_state}")
 
-            # Ajouter des logs pour vérifier l'état du client d'action
-            rospy.sleep(0.1)  # Pause pour laisser le temps à l'action de démarrer
+            
 
         else:
             rospy.loginfo("Tous les points de la trajectoire ont été atteints.")
 
-        # Passer au prochain point en sautant les autres
-        self.current_target_index += self.step
+        # # Passer au prochain point en sautant les autres
+        if len(self.planned_trajectory)-self.current_target_index<self.step:
+            self.current_target_index = len(self.planned_trajectory)
+        else:
+            self.current_target_index += self.step
+            
 
     def goal_reached_callback(self, status, result):
         """Callback pour gérer l'atteinte de chaque objectif."""
@@ -428,62 +375,22 @@ class PathFindingAlgorithm:
             # Obtenir le point correspondant
             reached_point = self.planned_trajectory[self.current_target_index]
 
-            # # Vérifiez que reached_point et le point suivant sont des PoseStamped
-            # if isinstance(reached_point, PoseStamped):
-            #     # Calculer l'orientation si ce n'est pas le dernier point
-            #     if self.current_target_index < len(self.planned_trajectory) - 1:
-            #         next_point = self.planned_trajectory[self.current_target_index + 1]
-
-            #         if isinstance(next_point, PoseStamped):
-            #             current_point = (reached_point.pose.position.x, reached_point.pose.position.y)
-            #             next_point_coords = (next_point.pose.position.x, next_point.pose.position.y)
-
-            #             quaternion = self.calculate_orientation(current_point, next_point_coords)
-            #             reached_point.pose.orientation.x = quaternion[0]
-            #             reached_point.pose.orientation.y = quaternion[1]
-            #             reached_point.pose.orientation.z = quaternion[2]
-            #             reached_point.pose.orientation.w = quaternion[3]
-            #     else:
-            #         # Orientation par défaut pour le dernier point
-            #         reached_point.pose.orientation.w = 1.0
-
         #     # Publier le point atteint sur le topic "/reached_points"
             reached_point = self.planned_trajectory[self.current_target_index]
             self.reached_points.append(reached_point)
 
             self.reached_points_pub.publish(reached_point)
 
-        #     self.current_target_index += 1
-            
-        #      # Vérifiez si la trajectoire est terminée
-        #     if self.current_target_index < len(self.planned_trajectory):
-        #         rospy.sleep(0.5)  # Add a short delay to ensure state transition
-        #         rospy.loginfo(f"Passage au point {self.current_target_index}")
-        #         self.send_next_goal()
-        #     else:
-        #         rospy.loginfo("Tous les points de la trajectoire ont été atteints.")
-        # elif status in [actionlib.GoalStatus.PREEMPTED, actionlib.GoalStatus.RECALLED]:
-        #     rospy.logwarn("Objectif annulé, tentative d'envoi du suivant.")
-        #     self.current_target_index += 1
-        #     rospy.sleep(0.2)
-        #     self.send_next_goal()
-        # else:
-        #     rospy.logwarn("Objectif non atteint, réessai.")
-        #     rospy.sleep(0.2)
-        #     self.send_next_goal()
-
             # Réinitialisation pour éviter tout conflit
             rospy.loginfo("Réinitialisation après succès.")
             self.move_base_client.cancel_goal()
             rospy.sleep(0.5)  # Délai pour stabiliser l'état
 
-            # Passer au prochain point
-            self.current_target_index += 1
-
             if self.current_target_index < len(self.planned_trajectory):
                 rospy.sleep(0.5)  # Délai pour la transition
-                rospy.loginfo(f"Passage au point suivant : {self.current_target_index}")
                 self.send_next_goal()
+                rospy.loginfo(f"Passage au point suivant : {self.current_target_index}")
+                rospy.logwarn(f"le nombre de point est de:{len(self.planned_trajectory)}")
             else:
                 rospy.loginfo("Tous les points de la trajectoire ont été atteints.")
         elif status in [actionlib.GoalStatus.PREEMPTED, actionlib.GoalStatus.RECALLED]:
@@ -492,6 +399,54 @@ class PathFindingAlgorithm:
         else:
             rospy.logwarn("État inattendu. Réessayer l'objectif actuel.")
             self.send_next_goal()
+
+    def enhance_table_safety(self, grid, additional_margin):
+        """
+        Détecte les petits amas (comme des pieds de table) et augmente la marge de sécurité autour d'eux.
+        :param grid: Grille numpy où 0 = libre, 1 = obstacle.
+        :param additional_margin: Marge supplémentaire en mètres autour des petits amas.
+        :return: Grille modifiée avec des marges de sécurité augmentées autour des petits amas.
+        """
+        # Trouver les indices des obstacles
+        obstacle_indices = np.argwhere(grid == 1)
+
+        if len(obstacle_indices) == 0:
+            rospy.logwarn("Aucun obstacle détecté dans la carte.")
+            return grid
+
+        # Utiliser DBSCAN pour détecter les clusters d'obstacles
+        eps_in_cells = int(0.1 / self.map_data.info.resolution)  # Exemple : 10 cm converti en cellules
+        clustering = DBSCAN(eps=eps_in_cells, min_samples=3).fit(obstacle_indices)  # Ajuster eps et min_samples
+        labels = clustering.labels_
+
+        # Création d'une copie de la grille pour ajouter les marges
+        enhanced_grid = grid.copy()
+
+        for cluster_id in set(labels):
+            
+            if cluster_id == -1:
+                continue  # Ignorer les "bruits" (points non assignés)
+            
+            rospy.logwarn("Cluster détecter")
+            # Extraire les indices des cellules appartenant à ce cluster
+            cluster_indices = obstacle_indices[labels == cluster_id]
+
+            # Vérifier si c'est un petit amas (nombre limité de points)
+            if len(cluster_indices) < 800:  # Ajuster ce seuil selon la taille typique des pieds de table
+                    # Dilater ce cluster pour ajouter une marge de sécurité
+                cluster_mask = np.zeros_like(grid, dtype=bool)
+                cluster_mask[tuple(zip(*cluster_indices))] = True
+
+                # Convertir la marge supplémentaire en cellules
+                margin_in_cells = int(additional_margin)
+                dilated_cluster = binary_dilation(cluster_mask, iterations=margin_in_cells)
+
+                # Ajouter le cluster dilaté à la grille améliorée
+                enhanced_grid[dilated_cluster] = 1
+
+                rospy.logwarn("Cluster détecter et petit")
+
+        return enhanced_grid
 
     def generate_grid(self):
         if not self.map_data:
@@ -511,15 +466,19 @@ class PathFindingAlgorithm:
 
         # Calculer la marge de sécurité en nombre de cellules
         margin_in_cells = int(self.safety_margin / resolution)
+        table_margin_in_cell = int(self.safety_table_margin / resolution)
 
         # Dilater les obstacles pour ajouter la marge de sécurité
         dilated_grid = self.dilate_obstacles(grid, margin_in_cells)
 
-        self.publish_grid(dilated_grid)
+        # Ajouter une marge de sécurité spécifique pour les petits amas
+        enhanced_grid = self.enhance_table_safety(dilated_grid, additional_margin=table_margin_in_cell)
+
+        self.publish_grid(enhanced_grid)
         
         rospy.loginfo(f"Grille générée avec une marge de sécurité de {self.safety_margin} m ({margin_in_cells} cellules).")
     
-        return dilated_grid
+        return enhanced_grid
         #return grid
 
     def a_star(self, start, goal, grid):
